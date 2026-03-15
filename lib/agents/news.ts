@@ -33,7 +33,7 @@ export async function runNewsAgent(
     env:       'BROWSERBASE',
     apiKey:    process.env.BROWSERBASE_API_KEY!,
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    model:        { modelName: 'claude-3-7-sonnet-latest', apiKey: process.env.ANTHROPIC_API_KEY! },
+    model:        'anthropic/claude-sonnet-4-6',
     experimental: true,
     disableAPI:   true,
     verbose:      0,
@@ -44,7 +44,7 @@ export async function runNewsAgent(
     await stagehand.init()
 
     const agent = stagehand.agent({
-      model: { modelName: 'claude-3-7-sonnet-latest', apiKey: process.env.ANTHROPIC_API_KEY! },
+      model: 'anthropic/claude-sonnet-4-6',
     })
 
     const result = await agent.execute({
