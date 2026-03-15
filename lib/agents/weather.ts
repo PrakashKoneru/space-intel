@@ -14,8 +14,9 @@ export async function runWeatherAgent(): Promise<SpaceWeatherResult> {
     env:       'BROWSERBASE',
     apiKey:    process.env.BROWSERBASE_API_KEY!,
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    model:     { modelName: 'anthropic/claude-sonnet-4-6', apiKey: process.env.ANTHROPIC_API_KEY! },
-    verbose:   0,
+    model:       { modelName: 'anthropic/claude-sonnet-4-6', apiKey: process.env.ANTHROPIC_API_KEY! },
+    verbose:     0,
+    disablePino: true,
   })
 
   try {
