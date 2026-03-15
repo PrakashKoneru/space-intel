@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Top-level record for each daily briefing run.
+// One Briefing is created each time the user triggers the system.
+model Briefing {
+  id          String       @id @default(cuid())
+  createdAt   DateTime     @default(now())
+  threatLevel String       // "GREEN" | "YELLOW" | "RED"
+  confidence  String       // "low" | "medium" | "high" — how many sources confirmed the threat signal
+  summary     String       // Plain English synthesis from Claude
+
+  agentRuns        AgentRun[]
+  reasoning        Reasoning?
+  knowledgeEntries KnowledgeEntry[]
+  neoObjects       NeoObject[]          // many-to-many — same asteroid can appear in multiple briefings
+  weatherRecord    SpaceWeatherRecord?  // one-to-one — one weather snapshot per briefing
+}
+
+// One row per agent per briefing.
+// Each Briefing creates three AgentRuns: neo, weather, news.
+// Storing raw output as JSON string preserves full fidelity for replay and debugging.
+model AgentRun {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  briefingId String
+  agent      String   // "neo" | "weather" | "news"
+  status     String   // "success" | "error"
+  durationMs Int      // how long the agent took in milliseconds
+  rawOutput  String   // full JSON response from the agent
+  error      String?  // error message if status is "error"
+
+  briefing   Briefing @relation(fields: [briefingId], references: [id])
+}
+
+// Master record for each unique asteroid, keyed by NASA's stable nasaId.
+// Deduped across runs — the same asteroid is never inserted twice.
+// Fields are updated on each run via upsert so we always have the latest data.
+// Many-to-many with Briefing — one asteroid can appear in multiple briefings,
+// one briefing can have multiple asteroids. Prisma manages the join table automatically.
+model NeoObject {
+  id                        String   @id @default(cuid())
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  // Fields mapped directly from NASA NeoWs response
+  nasaId                    String   @unique  // NASA's stable identifier — deduplication key
+  name                      String
+  absoluteMagnitudeH        Float    // brightness — lower = bigger
+  diameterMinMeters         Float
+  diameterMaxMeters         Float
+  isPotentiallyHazardous    Boolean  // NASA's official hazard flag (140m+ and orbit crosses Earth's path)
+  isSentryObject            Boolean  // JPL Sentry is actively monitoring this for future impact scenarios
+  closeApproachDate         String
+  velocityKmPerSecond       Float
+  missDistanceKm            Float
+  missDistanceLunar         Float    // lunar distances — easier to reason about (Moon = 1 LD)
+  missDistanceAstronomical  Float    // AU — 1 AU = Earth to Sun distance
+  orbitingBody              String   // usually "Earth"
+
+  briefings                 Briefing[]  // many-to-many back-relation
+}
+
+// Normalized space weather snapshot per briefing.
+// Stored as individual columns so we can query across runs —
+// e.g. "show all briefings where kpIndex >= 5 and a close NEO approach occurred"
+// This is what enables cross-signal reasoning between weather and asteroid data.
+model SpaceWeatherRecord {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  briefingId  String   @unique  // one-to-one with Briefing
+
+  kpIndex     Float    // 0-9 scale — stored as Float so we can query ranges
+  stormLevel  String   // "None" | "G1" | "G2" | "G3" | "G4" | "G5"
+  solarFlares String   // JSON array stored as string — list of active flare alerts
+  summary     String   // one sentence description of conditions
+
+  briefing    Briefing @relation(fields: [briefingId], references: [id])
+}
+
+// Claude's full prompt and response for each briefing.
+// Storing both sides lets us replay exactly what Claude saw and said on any given day.
+// This is the foundation of the knowledge system — reasoning is the raw material.
+model Reasoning {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  briefingId String   @unique
+  prompt     String   // the full prompt sent to Claude (all three agent outputs)
+  response   String   // Claude's full raw response
+  threatLevel String  // the threat level Claude assigned
+  model      String   // which Claude model was used
+
+  briefing   Briefing @relation(fields: [briefingId], references: [id])
+}
+
+// Durable facts extracted from Claude's reasoning across runs.
+// This is the knowledge system foundation — over time it becomes a queryable
+// record of what the system has observed and concluded.
+// Future feature: feed relevant KnowledgeEntries back into the orchestrator prompt
+// so Claude has memory of past signals when it reasons about today's data.
+model KnowledgeEntry {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  briefingId String
+  category   String   // "asteroid" | "solar_weather" | "news_signal" | "trajectory"
+  fact       String   // the extracted fact in plain English
+  confidence String   // "high" | "medium" | "low"
+  source     String   // which agent produced the signal: "neo" | "weather" | "news" | "orchestrator"
+
+  briefing   Briefing @relation(fields: [briefingId], references: [id])
+}
