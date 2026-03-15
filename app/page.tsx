@@ -168,8 +168,12 @@ export default function Home() {
         }
         if (agent === 'news') {
           const r = data as SpaceNewsResult
-          setNews(r)
-          summary = `${r.headlines.length} headlines · ${r.confirmedNeoIds.length + (r.confirmedWeatherEvent ? 1 : 0)} confirmations`
+          if (r?.headlines) {
+            setNews(r)
+            summary = `${r.headlines.length} headlines · ${r.confirmedNeoIds.length + (r.confirmedWeatherEvent ? 1 : 0)} confirmations`
+          } else {
+            summary = 'No data returned'
+          }
         }
         setAgents(prev => ({ ...prev, [agent]: { status: 'done', summary } }))
       }

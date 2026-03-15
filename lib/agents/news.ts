@@ -65,7 +65,11 @@ export async function runNewsAgent(
       maxSteps: 5,
     })
 
-    return result.output as unknown as SpaceNewsResult
+    const output = result.output as unknown as SpaceNewsResult
+    if (!output?.headlines) {
+      return { headlines: [], confirmedNeoIds: [], confirmedWeatherEvent: false, confirmationSummary: 'News agent returned incomplete data.' }
+    }
+    return output
 
   } finally {
     await stagehand.close()
