@@ -33,10 +33,7 @@ export async function runNewsAgent(
     env:       'BROWSERBASE',
     apiKey:    process.env.BROWSERBASE_API_KEY!,
     projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    model:     'anthropic/claude-sonnet-4-6',
-    modelClientOptions: {
-      apiKey: process.env.ANTHROPIC_API_KEY!,
-    },
+    model:     { modelName: 'anthropic/claude-sonnet-4-6', apiKey: process.env.ANTHROPIC_API_KEY! },
     experimental: true,
     disableAPI:   true,
     verbose: 0,
@@ -46,10 +43,7 @@ export async function runNewsAgent(
     await stagehand.init()
 
     const agent = stagehand.agent({
-      model: 'anthropic/claude-sonnet-4-6',
-      modelClientOptions: {
-        apiKey: process.env.ANTHROPIC_API_KEY!,
-      },
+      model: { modelName: 'anthropic/claude-sonnet-4-6', apiKey: process.env.ANTHROPIC_API_KEY! },
     })
 
     const result = await agent.execute({
@@ -70,7 +64,7 @@ export async function runNewsAgent(
       maxSteps: 5,
     })
 
-    return result.output as SpaceNewsResult
+    return result.output as unknown as SpaceNewsResult
 
   } finally {
     await stagehand.close()
