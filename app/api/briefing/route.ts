@@ -88,12 +88,16 @@ export async function GET() {
       }
 
       try {
+        // ── Create briefing record immediately so all subsequent writes have an id ──
+        const briefing = await db.briefing.create({
+          data: { threatLevel: 'PENDING', confidence: 'PENDING', summary: '' },
+        })
+
         // ── Step 1: run NEO and weather in parallel ──────────────────
         send({ type: 'agent_start', agent: 'neo' })
         send({ type: 'agent_start', agent: 'weather' })
 
-        const neoStart = Date.now()
-        const weatherStart = Date.now()
+        const parallelStart = Date.now()
 
         const [neoSettled, weatherSettled] = await Promise.allSettled([
           runNeoAgent(),
@@ -108,6 +112,66 @@ export async function GET() {
           ? weatherSettled.value
           : { kpIndex: '0', stormLevel: 'None', solarFlares: [], summary: 'Weather data unavailable.' }
 
+        // write NEO objects before signalling UI
+        const neoIds: string[] = []
+        for (const obj of neo.objects) {
+          const neoData = {
+            name:                     obj.name,
+            absoluteMagnitudeH:       obj.absoluteMagnitudeH,
+            diameterMinMeters:        obj.diameterMinMeters,
+            diameterMaxMeters:        obj.diameterMaxMeters,
+            isPotentiallyHazardous:   obj.isPotentiallyHazardous,
+            isSentryObject:           obj.isSentryObject,
+            closeApproachDate:        obj.closeApproachDate,
+            velocityKmPerSecond:      obj.velocityKmPerSecond,
+            missDistanceKm:           obj.missDistanceKm,
+            missDistanceLunar:        obj.missDistanceLunar,
+            missDistanceAstronomical: obj.missDistanceAstronomical,
+            orbitingBody:             obj.orbitingBody,
+          }
+          const record = await db.neoObject.upsert({
+            where:  { nasaId: obj.nasaId },
+            update: { ...neoData },
+            create: { nasaId: obj.nasaId, ...neoData },
+          })
+          neoIds.push(record.id)
+        }
+
+        // write weather record before signalling UI
+        await db.spaceWeatherRecord.create({
+          data: {
+            briefingId:  briefing.id,
+            kpIndex:     parseFloat(weather.kpIndex) || 0,
+            stormLevel:  weather.stormLevel,
+            solarFlares: JSON.stringify(weather.solarFlares),
+            summary:     weather.summary,
+          },
+        })
+
+        // write NEO + weather agent runs
+        const parallelDuration = Date.now() - parallelStart
+        await db.agentRun.createMany({
+          data: [
+            {
+              briefingId: briefing.id,
+              agent:      'neo',
+              status:     neoSettled.status === 'fulfilled' ? 'success' : 'error',
+              durationMs: parallelDuration,
+              rawOutput:  JSON.stringify(neo),
+              error:      neoSettled.status === 'rejected' ? String(neoSettled.reason) : null,
+            },
+            {
+              briefingId: briefing.id,
+              agent:      'weather',
+              status:     weatherSettled.status === 'fulfilled' ? 'success' : 'error',
+              durationMs: parallelDuration,
+              rawOutput:  JSON.stringify(weather),
+              error:      weatherSettled.status === 'rejected' ? String(weatherSettled.reason) : null,
+            },
+          ],
+        })
+
+        // now signal UI
         send({ type: neoSettled.status === 'fulfilled' ? 'agent_complete' : 'agent_error', agent: 'neo', data: neo, error: neoSettled.status === 'rejected' ? String(neoSettled.reason) : undefined })
         send({ type: weatherSettled.status === 'fulfilled' ? 'agent_complete' : 'agent_error', agent: 'weather', data: weather, error: weatherSettled.status === 'rejected' ? String(weatherSettled.reason) : undefined })
 
@@ -121,6 +185,18 @@ export async function GET() {
         const news: SpaceNewsResult = newsResult.status === 'fulfilled'
           ? newsResult.value
           : { headlines: [], confirmedNeoIds: [], confirmedWeatherEvent: false, confirmationSummary: 'News data unavailable.' }
+
+        // write news agent run before signalling UI
+        await db.agentRun.create({
+          data: {
+            briefingId: briefing.id,
+            agent:      'news',
+            status:     newsResult.status === 'fulfilled' ? 'success' : 'error',
+            durationMs: Date.now() - newsStart,
+            rawOutput:  JSON.stringify(news),
+            error:      newsResult.status === 'rejected' ? String(newsResult.reason) : null,
+          },
+        })
 
         send({ type: newsResult.status === 'fulfilled' ? 'agent_complete' : 'agent_error', agent: 'news', data: news, error: newsResult.status === 'rejected' ? String(newsResult.reason) : undefined })
 
@@ -148,48 +224,10 @@ export async function GET() {
           }
         }
 
-        // ── Step 5: save to DB (sequential explicit writes, no nested creates) ──
-        const briefing = await db.briefing.create({
-          data: { threatLevel, confidence, summary },
-        })
-
-        await db.agentRun.createMany({
-          data: [
-            {
-              briefingId: briefing.id,
-              agent:      'neo',
-              status:     neoSettled.status === 'fulfilled' ? 'success' : 'error',
-              durationMs: Date.now() - neoStart,
-              rawOutput:  JSON.stringify(neo),
-              error:      neoSettled.status === 'rejected' ? String(neoSettled.reason) : null,
-            },
-            {
-              briefingId: briefing.id,
-              agent:      'weather',
-              status:     weatherSettled.status === 'fulfilled' ? 'success' : 'error',
-              durationMs: Date.now() - weatherStart,
-              rawOutput:  JSON.stringify(weather),
-              error:      weatherSettled.status === 'rejected' ? String(weatherSettled.reason) : null,
-            },
-            {
-              briefingId: briefing.id,
-              agent:      'news',
-              status:     newsResult.status === 'fulfilled' ? 'success' : 'error',
-              durationMs: Date.now() - newsStart,
-              rawOutput:  JSON.stringify(news),
-              error:      newsResult.status === 'rejected' ? String(newsResult.reason) : null,
-            },
-          ],
-        })
-
-        await db.spaceWeatherRecord.create({
-          data: {
-            briefingId:  briefing.id,
-            kpIndex:     parseFloat(weather.kpIndex) || 0,
-            stormLevel:  weather.stormLevel,
-            solarFlares: JSON.stringify(weather.solarFlares),
-            summary:     weather.summary,
-          },
+        // ── Step 5: finalise briefing + write reasoning, then signal UI ──
+        await db.briefing.update({
+          where: { id: briefing.id },
+          data:  { threatLevel, confidence, summary },
         })
 
         await db.reasoning.create({
@@ -202,43 +240,19 @@ export async function GET() {
           },
         })
 
-        // upsert each NEO object, then connect all to this briefing in one explicit write
-        // (nested connect inside upsert.update is silently dropped by Prisma 7 + SQLite adapter)
-        const neoIds: string[] = []
-        for (const obj of neo.objects) {
-          const neoData = {
-            name:                     obj.name,
-            absoluteMagnitudeH:       obj.absoluteMagnitudeH,
-            diameterMinMeters:        obj.diameterMinMeters,
-            diameterMaxMeters:        obj.diameterMaxMeters,
-            isPotentiallyHazardous:   obj.isPotentiallyHazardous,
-            isSentryObject:           obj.isSentryObject,
-            closeApproachDate:        obj.closeApproachDate,
-            velocityKmPerSecond:      obj.velocityKmPerSecond,
-            missDistanceKm:           obj.missDistanceKm,
-            missDistanceLunar:        obj.missDistanceLunar,
-            missDistanceAstronomical: obj.missDistanceAstronomical,
-            orbitingBody:             obj.orbitingBody,
-          }
-          const record = await db.neoObject.upsert({
-            where:  { nasaId: obj.nasaId },
-            update: { ...neoData },
-            create: { nasaId: obj.nasaId, ...neoData },
-          })
-          neoIds.push(record.id)
-        }
+        send({
+          type: 'orchestrator_complete',
+          agent: 'orchestrator',
+          data: { id: briefing.id, threatLevel, confidence, summary },
+        })
+
+        // joins are background — user doesn't depend on them for the UI
         for (const id of neoIds) {
           await db.briefing.update({
             where: { id: briefing.id },
             data:  { neoObjects: { connect: { id } } },
           })
         }
-
-        send({
-          type: 'orchestrator_complete',
-          agent: 'orchestrator',
-          data: { id: briefing.id, threatLevel, confidence, summary },
-        })
 
       } catch (err) {
         console.error('[briefing] pipeline error:', err)
