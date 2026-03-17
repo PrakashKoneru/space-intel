@@ -202,7 +202,9 @@ export async function GET() {
           },
         })
 
-        // upsert each NEO object and connect to this briefing
+        // upsert each NEO object, then connect all to this briefing in one explicit write
+        // (nested connect inside upsert.update is silently dropped by Prisma 7 + SQLite adapter)
+        const neoIds: string[] = []
         for (const obj of neo.objects) {
           const neoData = {
             name:                     obj.name,
@@ -218,10 +220,17 @@ export async function GET() {
             missDistanceAstronomical: obj.missDistanceAstronomical,
             orbitingBody:             obj.orbitingBody,
           }
-          await db.neoObject.upsert({
+          const record = await db.neoObject.upsert({
             where:  { nasaId: obj.nasaId },
-            update: { ...neoData, briefings: { connect: { id: briefing.id } } },
-            create: { nasaId: obj.nasaId, ...neoData, briefings: { connect: { id: briefing.id } } },
+            update: { ...neoData },
+            create: { nasaId: obj.nasaId, ...neoData },
+          })
+          neoIds.push(record.id)
+        }
+        for (const id of neoIds) {
+          await db.briefing.update({
+            where: { id: briefing.id },
+            data:  { neoObjects: { connect: { id } } },
           })
         }
 
@@ -232,6 +241,7 @@ export async function GET() {
         })
 
       } catch (err) {
+        console.error('[briefing] pipeline error:', err)
         send({ type: 'error', error: String(err) })
       } finally {
         controller.close()
